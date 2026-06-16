@@ -175,3 +175,20 @@ python -m app.worker.main
 
 You still need a running RabbitMQ (`docker run -p 5672:5672 -p 15672:15672 rabbitmq:3.13-management`)
 and either a running Ollama or valid Groq/HF credentials.
+
+## Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+Tests are fully hermetic — they use a per-test `tmp_path` for `DATA_DIR`,
+disable `.env` loading so local credentials never leak in, and stub the
+RabbitMQ client + LLM/TTS providers. Coverage spans the JobStore (including
+path-traversal safety and atomic writes), retry classification, LLM factory
+selection, the FastAPI endpoints, and the worker pipeline (happy path,
+failure path, idempotency).
+
+CI (`.github/workflows/ci.yml`) runs `compileall` + `pytest` on Python 3.12
+and builds the Docker image on every push and pull request.

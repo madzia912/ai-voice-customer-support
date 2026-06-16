@@ -30,10 +30,13 @@ class JobStore:
         self._root = Path(root)
         self._root.mkdir(parents=True, exist_ok=True)
 
-    def _path(self, job_id: str) -> Path:
+    @staticmethod
+    def _safe_id(job_id: str) -> str:
         # Guard against path traversal on the public job id.
-        safe = job_id.replace("/", "_").replace("..", "_")
-        return self._root / f"{safe}.json"
+        return job_id.replace("/", "_").replace("\\", "_").replace("..", "_")
+
+    def _path(self, job_id: str) -> Path:
+        return self._root / f"{self._safe_id(job_id)}.json"
 
     def create(self, record: JobRecord) -> JobRecord:
         self._write(record)
@@ -81,11 +84,12 @@ class JobStore:
         return record
 
     def _write(self, record: JobRecord) -> None:
-        path = self._path(record.job_id)
+        safe = self._safe_id(record.job_id)
+        path = self._root / f"{safe}.json"
         payload = record.model_dump_json()
         # Atomic write: tmp file in the same directory + os.replace.
         fd, tmp_path = tempfile.mkstemp(
-            prefix=f".{record.job_id}.", suffix=".tmp", dir=str(self._root)
+            prefix=f".{safe}.", suffix=".tmp", dir=str(self._root)
         )
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:

@@ -10,7 +10,7 @@ from tenacity import (
     AsyncRetrying,
     RetryError,
     before_sleep_log,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential,
 )
@@ -21,13 +21,12 @@ T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
 
-# Network/transient HTTP failures we want to retry on.
-_RETRYABLE = (httpx.TimeoutException, httpx.TransportError, httpx.HTTPStatusError)
-
 
 def is_retryable_status(exc: BaseException) -> bool:
+    """Return True for transient errors that warrant another attempt."""
     if isinstance(exc, httpx.HTTPStatusError):
-        # Retry on 408, 429, and any 5xx.
+        # Retry on 408, 429, and any 5xx; explicit 4xx errors are caller bugs
+        # and must fail fast.
         code = exc.response.status_code
         return code == 408 or code == 429 or 500 <= code < 600
     return isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
@@ -48,7 +47,9 @@ async def call_with_retry(
         wait=wait_exponential(
             multiplier=settings.retry_backoff_base_seconds, min=0.5, max=20.0
         ),
-        retry=retry_if_exception_type(_RETRYABLE),
+        # The predicate (not the exception *type*) decides what to retry, so a
+        # 4xx HTTPStatusError fails fast even though its type is "retryable".
+        retry=retry_if_exception(is_retryable_status),
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True,
     )
@@ -58,15 +59,14 @@ async def call_with_retry(
                 try:
                     return await func()
                 except httpx.HTTPStatusError as exc:
-                    if not is_retryable_status(exc):
-                        raise  # non-retryable: bubble up immediately
-                    logger.warning(
-                        "retryable HTTP error",
-                        extra={
-                            "operation": operation,
-                            "status_code": exc.response.status_code,
-                        },
-                    )
+                    if is_retryable_status(exc):
+                        logger.warning(
+                            "retryable HTTP error",
+                            extra={
+                                "operation": operation,
+                                "status_code": exc.response.status_code,
+                            },
+                        )
                     raise
     except RetryError as exc:  # pragma: no cover - defensive
         raise exc.last_attempt.exception()  # type: ignore[misc]
