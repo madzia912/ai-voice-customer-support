@@ -1,0 +1,89 @@
+# AI Voice Orchestration — local stack.
+#
+# Usage:
+#   cp .env.example .env   # then fill in ELEVENLABS_API_KEY (+ Groq/HF if used)
+#   docker compose up --build
+#
+# Scale workers:
+#   docker compose up --scale worker=3
+#
+# To use Groq or HuggingFace instead of Ollama, set LLM_PROVIDER in .env and
+# you can stop the ollama service:
+#   docker compose stop ollama
+
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    ports:
+      - "5672:5672"     # AMQP
+      - "15672:15672"   # Management UI (guest/guest)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "sh", "-c", "ollama list >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    # Pull the default model on first boot, then serve.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        ollama serve & SERVE_PID=$$!;
+        sleep 3;
+        ollama pull ${OLLAMA_MODEL:-llama3.2:1b} || true;
+        wait $$SERVE_PID
+
+  api:
+    build: .
+    command: ["uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      OLLAMA_BASE_URL: http://ollama:11434
+    ports:
+      - "8000:8000"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - app_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build: .
+    command: ["python", "-m", "app.worker.main"]
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8000}
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      OLLAMA_BASE_URL: http://ollama:11434
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - app_data:/data
+    restart: unless-stopped
+
+volumes:
+  rabbitmq_data:
+  ollama_data:
+  app_data:
